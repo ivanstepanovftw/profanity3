@@ -10,7 +10,9 @@ ifeq ($(UNAME_S),Darwin)
 	CFLAGS=-c -std=c++11 -Wall -mmmx -O2
 else
 	LDFLAGS=-s -lOpenCL -mcmodel=large
-	CFLAGS=-c -std=c++11 -Wall -mmmx -O2 -mcmodel=large 
+	CFLAGS=-c -std=c++11 -Wall -mmmx -O2 -mcmodel=large
+#	LDFLAGS=-s -lOpenCL -mcmodel=large -DPROFANITY_DEBUG
+#	CFLAGS=-c -std=c++11 -Wall -mmmx -O2 -mcmodel=large -DPROFANITY_DEBUG
 endif
 
 all: $(SOURCES) $(EXECUTABLE)

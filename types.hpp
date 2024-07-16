@@ -27,6 +27,7 @@ typedef struct {
 	cl_uint found;
 	cl_uint foundId;
 	cl_uchar foundHash[20];
+	cl_uchar foundBase58[34];
 } result;
 
 #endif /* HPP_TYPES */

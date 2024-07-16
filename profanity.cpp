@@ -25,12 +25,13 @@
 #include "Mode.hpp"
 #include "help.hpp"
 
-std::string readFile(const char * const szFilename)
+std::string readFile(std::string filename)
 {
-	std::ifstream in(szFilename, std::ios::in | std::ios::binary);
-	std::ostringstream contents;
-	contents << in.rdbuf();
-	return contents.str();
+	std::ifstream stream(filename);
+	if (!stream) {
+		throw std::runtime_error("could not open file");
+	}
+	return std::string(std::istreambuf_iterator<char>(stream), (std::istreambuf_iterator<char>()));
 }
 
 std::vector<cl_device_id> getAllDevices(cl_device_type deviceType = CL_DEVICE_TYPE_GPU)
@@ -141,13 +142,12 @@ std::string getDeviceCacheFilename(cl_device_id & d, const size_t & inverseSize)
 }
 
 int main(int argc, char * * argv) {
-	THIS LINE WILL LEAD TO A COMPILE ERROR. THIS TOOL SHOULD NOT BE USED, SEE README.
-
 	try {
 		ArgParser argp(argc, argv);
 		bool bHelp = false;
 		bool bModeBenchmark = false;
 		bool bModeZeros = false;
+		bool bModeZeroBytes = false;
 		bool bModeLetters = false;
 		bool bModeNumbers = false;
 		std::string strModeLeading;
@@ -165,6 +165,7 @@ int main(int argc, char * * argv) {
 		size_t inverseSize = 255;
 		size_t inverseMultiple = 16384;
 		bool bMineContract = false;
+		bool tron = false;
 
 		argp.addSwitch('h', "help", bHelp);
 		argp.addSwitch('0', "benchmark", bModeBenchmark);
@@ -186,6 +187,8 @@ int main(int argc, char * * argv) {
 		argp.addSwitch('i', "inverse-size", inverseSize);
 		argp.addSwitch('I', "inverse-multiple", inverseMultiple);
 		argp.addSwitch('c', "contract", bMineContract);
+		argp.addSwitch('b', "zero-bytes", bModeZeroBytes);
+		argp.addSwitch('t', "tron", tron);
 
 		if (!argp.parse()) {
 			std::cout << "error: bad arguments, try again :<" << std::endl;
@@ -197,27 +200,29 @@ int main(int argc, char * * argv) {
 			return 0;
 		}
 
-		Mode mode = Mode::benchmark();
+		Mode mode = Mode::benchmark(tron);
 		if (bModeBenchmark) {
-			mode = Mode::benchmark();
+			mode = Mode::benchmark(tron);
 		} else if (bModeZeros) {
-			mode = Mode::zeros();
+			mode = Mode::zeros(tron);
 		} else if (bModeLetters) {
-			mode = Mode::letters();
+			mode = Mode::letters(tron);
 		} else if (bModeNumbers) {
-			mode = Mode::numbers();
+			mode = Mode::numbers(tron);
 		} else if (!strModeLeading.empty()) {
-			mode = Mode::leading(strModeLeading.front());
+			mode = Mode::leading(tron, strModeLeading.front());
 		} else if (!strModeMatching.empty()) {
-			mode = Mode::matching(strModeMatching);
+			mode = Mode::matching(tron, strModeMatching);
 		} else if (bModeLeadingRange) {
-			mode = Mode::leadingRange(rangeMin, rangeMax);
+			mode = Mode::leadingRange(tron, rangeMin, rangeMax);
 		} else if (bModeRange) {
-			mode = Mode::range(rangeMin, rangeMax);
+			mode = Mode::range(tron, rangeMin, rangeMax);
 		} else if(bModeMirror) {
-			mode = Mode::mirror();
+			mode = Mode::mirror(tron);
 		} else if (bModeDoubles) {
-			mode = Mode::doubles();
+			mode = Mode::doubles(tron);
+		} else if (bModeZeroBytes) {
+			mode = Mode::zeroBytes(tron);
 		} else {
 			std::cout << g_strHelp << std::endl;
 			return 0;
@@ -295,17 +300,44 @@ int main(int argc, char * * argv) {
 			cl_int * pStatus = new cl_int[vDevices.size()];
 
 			clProgram = clCreateProgramWithBinary(clContext, vDevices.size(), vDevices.data(), vDeviceBinarySize.data(), pKernels, pStatus, &errorCode);
+			delete[] pKernels;
+			delete[] pStatus;
+
 			if(printResult(clProgram, errorCode)) {
 				return 1;
 			}
 		} else {
 			// Create a program from the kernel source
 			std::cout << "  Compiling kernel..." << std::flush;
-			const std::string strKeccak = readFile("keccak.cl");
-			const std::string strVanity = readFile("profanity.cl");
-			const char * szKernels[] = { strKeccak.c_str(), strVanity.c_str() };
+			std::vector<std::string> files = {
+				"inc_vendor.h",
+				"inc_types.h",
+				"inc_common.h",
+				// "inc_platform.h",
+				"inc_hash_sha256.h",
 
-			clProgram = clCreateProgramWithSource(clContext, sizeof(szKernels) / sizeof(char *), szKernels, NULL, &errorCode);
+				"inc_common.cl",
+				// "inc_platform.cl",
+				"inc_hash_sha256.cl",
+
+				// "sha256.h",
+
+				"keccak.cl",
+				"profanity.cl",
+			};
+			std::vector<std::string> kernels;
+			for (const auto & file : files) {
+				const std::string str = readFile(file);
+				kernels.push_back(str);
+			}
+
+			// Create a vector of C-string pointers
+			std::vector<const char*> kernelSources;
+			for (const auto & kernel : kernels) {
+				kernelSources.push_back(kernel.c_str());
+			}
+
+			clProgram = clCreateProgramWithSource(clContext, kernelSources.size(), kernelSources.data(), NULL, &errorCode);
 			if (printResult(clProgram, errorCode)) {
 				return 1;
 			}
@@ -343,7 +375,7 @@ int main(int argc, char * * argv) {
 
 		std::cout << std::endl;
 
-		Dispatcher d(clContext, clProgram, mode, worksizeMax == 0 ? inverseSize * inverseMultiple : worksizeMax, inverseSize, inverseMultiple, 0);
+		Dispatcher d(clContext, clProgram, mode, worksizeMax == 0 ? inverseSize * inverseMultiple : worksizeMax, inverseSize, inverseMultiple, 0, tron);
 		for (auto & i : vDevices) {
 			d.addDevice(i, worksizeLocal, mDeviceIndex[i]);
 		}

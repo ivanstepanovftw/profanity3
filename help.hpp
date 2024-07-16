@@ -13,6 +13,7 @@ usage: ./profanity [OPTIONS]
     --numbers               Score on numbers anywhere in hash.
     --mirror                Score on mirroring from center.
     --leading-doubles       Score on hashes leading with hexadecimal pairs
+    -b --zero-bytes         Score on zero bytes anywhere in hash.
 
   Modes with arguments:
     --leading <single hex>  Score on hashes leading with given hex character.
@@ -42,10 +43,14 @@ usage: ./profanity [OPTIONS]
     -I, --inverse-multiple  Set how many above work items will run in
                             parallell. [default = 16384]
 
-  Examples:
+  Examples for TRX:
+    ./profanity --tron --matching TRY*4chan
+
+  Examples for ETH:
     ./profanity --leading f
     ./profanity --matching dead
     ./profanity --matching badXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXbad
+    ./profanity --matching "bad*bad"
     ./profanity --leading-range -m 0 -M 1
     ./profanity --leading-range -m 10 -M 12
     ./profanity --range -m 0 -M 1
@@ -54,6 +59,8 @@ usage: ./profanity [OPTIONS]
   About:
     profanity is a vanity address generator for Ethereum that utilizes
     computing power from GPUs using OpenCL.
+
+    Tron and security fixes: Ivan Stepanov <ivanstepanovftw@gmail.com>
 
     Author: Johan Gustafsson <profanity@johgu.se>
     Beer donations: 0x000dead000ae1c8e8ac27103e4ff65f42a4e9203

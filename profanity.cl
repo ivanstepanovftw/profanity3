@@ -419,7 +419,85 @@ typedef struct {
 	uint found;
 	uint foundId;
 	uchar foundHash[20];
+	char foundBase58[34];
 } result;
+
+void base58_encode(const uchar * const input, const size_t input_len, char * const output) {
+	uint digits[64] = {0};
+	size_t digit_len = 1;
+
+	for (size_t i = 0; i < input_len; i++) {
+		uint carry = input[i];
+		for (size_t j = 0; j < digit_len; j++) {
+			carry += (digits[j] << 8);
+			digits[j] = carry % 58;
+			carry /= 58;
+		}
+		while (carry) {
+			digits[digit_len++] = carry % 58;
+			carry /= 58;
+		}
+	}
+
+	size_t leading_zeros = 0;
+	while (leading_zeros < input_len && input[leading_zeros] == 0) {
+		output[leading_zeros++] = '1';
+	}
+
+	for (size_t i = 0; i < digit_len; i++) {
+		output[leading_zeros + i] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"[digits[digit_len - 1 - i]];
+	}
+	// output[leading_zeros + digit_len] = '\0';
+}
+
+inline void fill(void * const dst_, const char value, const uint size) {
+	char * dst = (char *)dst_;
+	for (size_t i = 0; i < size; ++i) {
+		dst[i] = value;
+	}
+}
+
+inline void copy(void * const dst_, const void * const src_, const uint size) {
+	char * dst = (char *)dst_;
+	const char * src = (const char *)src_;
+	for (size_t i = 0; i < size; ++i) {
+		dst[i] = src[i];
+	}
+}
+
+void eth_to_tron(
+	__global const uchar * const hash,
+	uchar * tron_address_bytes,
+	char * const base58
+) {
+	// uchar hash[32];
+	// copy(hash, h.d, 32);
+
+	// uchar tron_address_bytes[1 + 20 + 4 + 39]; // 0x41 | hash[-20:] | checksum[:4] | 39 byte pad to 64 byte, requirement by sha256_update_64
+	tron_address_bytes[0] = 0x41;
+	// copy(tron_address_bytes + 1, hash + 32 - 20, 20);
+	copy(tron_address_bytes + 1, hash, 20);
+	fill(tron_address_bytes + 1 + 20, 0, 43);
+
+	sha256_ctx_t sha256_ctx;
+	sha256_init(&sha256_ctx);
+	sha256_update_swap(&sha256_ctx, (const uint *) tron_address_bytes, 21);
+	sha256_final(&sha256_ctx);
+	uint hash2[8 + 8] = {}; // 64 byte pad requirement by sha256_update_64
+	for (size_t i = 0; i < 8; ++i) {
+		hash2[i] = sha256_ctx.h[i];
+	}
+	sha256_init(&sha256_ctx);
+	sha256_update(&sha256_ctx, (const uint *) hash2, 32);
+	sha256_final(&sha256_ctx);
+
+	uchar * checksum = (uchar *) sha256_ctx.h;
+	for (size_t i = 0; i < 4; i++) {
+		tron_address_bytes[1 + 20 + i] = checksum[3 - i];
+	}
+
+	base58_encode(tron_address_bytes, 1 + 20 + 4, base58);
+}
 
 void profanity_init_seed(__global const point * const precomp, point * const p, bool * const pIsFirst, const size_t precompOffset, const ulong seed) {
 	point o;
@@ -661,8 +739,15 @@ __kernel void profanity_iterate(__global mp_number * const pDeltaX, __global mp_
 	pInverse[id].d[4] = h.d[7];
 }
 
-void profanity_result_update(const size_t id, __global const uchar * const hash, __global result * const pResult, const uchar score, const uchar scoreMax) {
-	if (score && score > scoreMax) {
+void profanity_result_update(
+	const size_t id,
+	__global const uchar * const hash,
+	const uchar * const base58,
+	__global result * const pResult,
+	const uchar score,
+	const uchar scoreMax
+) {
+	if (score && score >= scoreMax) {
 		uchar hasResult = atomic_inc(&pResult[score].found); // NOTE: If "too many" results are found it'll wrap around to 0 again and overwrite last result. Only relevant if global worksize exceeds MAX(uint).
 
 		// Save only one result for each score, the first.
@@ -671,6 +756,9 @@ void profanity_result_update(const size_t id, __global const uchar * const hash,
 
 			for (int i = 0; i < 20; ++i) {
 				pResult[score].foundHash[i] = hash[i];
+			}
+			for (int i = 0; base58 && i < 34; ++i) {
+				pResult[score].foundBase58[i] = base58[i];
 			}
 		}
 	}
@@ -707,7 +795,7 @@ __kernel void profanity_score_benchmark(__global mp_number * const pInverse, __g
 	__global const uchar * const hash = pInverse[id].d;
 	int score = 0;
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
 }
 
 __kernel void profanity_score_matching(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
@@ -721,7 +809,7 @@ __kernel void profanity_score_matching(__global mp_number * const pInverse, __gl
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
 }
 
 __kernel void profanity_score_leading(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
@@ -745,7 +833,7 @@ __kernel void profanity_score_leading(__global mp_number * const pInverse, __glo
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
 }
 
 __kernel void profanity_score_range(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
@@ -766,7 +854,21 @@ __kernel void profanity_score_range(__global mp_number * const pInverse, __globa
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
+}
+
+__kernel void profanity_score_zerobytes(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
+	const size_t id = get_global_id(0);
+	__global const uchar * const hash = pInverse[id].d;
+	int score = 0;
+
+	for (int i = 0; i < 20; ++i) {
+		if (hash[i] == 0) {
+			score++;
+		}
+	}
+
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
 }
 
 __kernel void profanity_score_leadingrange(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
@@ -793,7 +895,7 @@ __kernel void profanity_score_leadingrange(__global mp_number * const pInverse, 
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
 }
 
 __kernel void profanity_score_mirror(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
@@ -821,7 +923,7 @@ __kernel void profanity_score_mirror(__global mp_number * const pInverse, __glob
 		++score;
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
 }
 
 __kernel void profanity_score_doubles(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
@@ -838,5 +940,66 @@ __kernel void profanity_score_doubles(__global mp_number * const pInverse, __glo
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, 0, pResult, score, scoreMax);
+}
+
+__kernel void profanity_score_benchmark_tron(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
+	const size_t id = get_global_id(0);
+	__global const uchar * const hash = pInverse[id].d;
+	int score = 0;
+
+	uchar tron_address_bytes[1 + 20 + 4 + 39]; // 0x41 | hash[-20:] | checksum[:4] | 39 byte pad to 64 byte, requirement by sha256_update_64
+	char base58[34];
+	eth_to_tron(hash, tron_address_bytes, base58);
+
+	profanity_result_update(id, hash, base58, pResult, score, scoreMax);
+}
+
+__kernel void profanity_score_leading_tron(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
+	const size_t id = get_global_id(0);
+	__global const uchar * const hash = pInverse[id].d;
+	int score = 0;
+
+	uchar tron_address_bytes[1 + 20 + 4 + 39]; // 0x41 | hash[-20:] | checksum[:4] | 39 byte pad to 64 byte, requirement by sha256_update_64
+	char base58[34];
+	eth_to_tron(hash, tron_address_bytes, base58);
+
+	for (int i = 1; i < 34; ++i) {
+		if (base58[i] == data1[0]) {
+			++score;
+		}
+		else {
+			break;
+		}
+	}
+
+	profanity_result_update(id, hash, base58, pResult, score, scoreMax);
+}
+
+char tolower(char c) {
+	if (c >= 'A' && c <= 'Z') {
+		return c + 32;
+	}
+	return c;
+}
+
+__kernel void profanity_score_matching_tron(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
+	const size_t id = get_global_id(0);
+	__global const uchar * const hash = pInverse[id].d;
+
+	uchar tron_address_bytes[1 + 20 + 4 + 39]; // 0x41 | hash[-20:] | checksum[:4] | 39 byte pad to 64 byte, requirement by sha256_update_64
+	char base58[34];
+	eth_to_tron(hash, tron_address_bytes, base58);
+
+	int score = 0;
+	for (int i = 0; i < 34; ++i) {
+		if (data1[i] > 0) {
+			if (tolower(base58[i]) == tolower(data2[i]))
+				++score;
+			if (base58[i] == data2[i])
+				++score;
+		}
+	}
+
+	profanity_result_update(id, hash, base58, pResult, score, scoreMax);
 }

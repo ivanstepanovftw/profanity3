@@ -10,7 +10,54 @@
 #include <thread>
 #include <algorithm>
 
+#if defined(__APPLE__) || defined(__MACOSX)
+#include <machine/endian.h>
+#else
+#include <arpa/inet.h>
+#endif
+
 #include "precomp.hpp"
+
+#ifndef htonll
+#define htonll(x) ((((uint64_t)htonl(x)) << 32) | htonl((x) >> 32))
+#endif
+
+static std::string::size_type fromHex(char c) {
+	if (c >= 'A' && c <= 'F') {
+		c += 'a' - 'A';
+	}
+
+	const std::string hex = "0123456789abcdef";
+	const std::string::size_type ret = hex.find(c);
+	return ret;
+}
+
+static cl_ulong4 fromHex(const std::string & strHex) {
+	uint8_t data[32];
+	std::fill(data, data + sizeof(data), cl_uchar(0));
+
+	auto index = 0;
+	for(size_t i = 0; i < strHex.size(); i += 2) {
+		const auto indexHi = fromHex(strHex[i]);
+		const auto indexLo = i + 1 < strHex.size() ? fromHex(strHex[i+1]) : std::string::npos;
+
+		const auto valHi = (indexHi == std::string::npos) ? 0 : indexHi << 4;
+		const auto valLo = (indexLo == std::string::npos) ? 0 : indexLo;
+
+		data[index] = valHi | valLo;
+		++index;
+	}
+
+	cl_ulong4 res = {
+		.s = {
+			htonll(*(uint64_t *)(data + 24)),
+			htonll(*(uint64_t *)(data + 16)),
+			htonll(*(uint64_t *)(data + 8)),
+			htonll(*(uint64_t *)(data + 0)),
+		}
+	};
+	return res;
+}
 
 static std::string toHex(const uint8_t * const s, const size_t len) {
 	std::string b("0123456789abcdef");
@@ -26,7 +73,7 @@ static std::string toHex(const uint8_t * const s, const size_t len) {
 	return r;
 }
 
-static void printResult(cl_ulong4 seed, cl_ulong round, result r, cl_uchar score, const std::chrono::time_point<std::chrono::steady_clock> & timeStart, const Mode & mode) {
+static void printResult(cl_ulong4 seed, cl_ulong round, result r, cl_uchar score, const std::chrono::time_point<std::chrono::steady_clock> & timeStart, const Mode & mode, bool tron) {
 	// Time delta
 	const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - timeStart).count();
 
@@ -45,14 +92,19 @@ static void printResult(cl_ulong4 seed, cl_ulong round, result r, cl_uchar score
 	const std::string strPrivate = ss.str();
 
 	// Format public key
-	const std::string strPublic = toHex(r.foundHash, 20);
+	std::string strPublic;
+	if (tron) {
+		strPublic += (char *)r.foundBase58;
+	} else {
+		strPublic = "0x" + toHex(r.foundHash, 20);
+	}
 
 	// Print
 	const std::string strVT100ClearLine = "\33[2K\r";
 	std::cout << strVT100ClearLine << "  Time: " << std::setw(5) << seconds << "s Score: " << std::setw(2) << (int) score << " Private: 0x" << strPrivate << ' ';
 
 	std::cout << mode.transformName();
-	std::cout << ": 0x" << strPublic << std::endl;
+	std::cout << ": " << strPublic << std::endl;
 }
 
 unsigned int getKernelExecutionTimeMicros(cl_event & e) {
@@ -106,16 +158,35 @@ cl_ulong4 Dispatcher::Device::createSeed() {
 	r.s[3] = 1;
 	return r;
 #else
-	// Randomize private keys
-	std::random_device rd;
-	std::mt19937_64 eng(rd());
-	std::uniform_int_distribution<cl_ulong> distr;
+	cl_ulong4 r{};
+#ifdef _WIN32
+	std::unique_ptr<HCRYPTPROV, void(*)(HCRYPTPROV*)> hCryptProv(new HCRYPTPROV, [](HCRYPTPROV* p) {
+		if (p && *p) {
+			CryptReleaseContext(*p, 0);
+			delete p;
+		}
+	});
 
-	cl_ulong4 r;
-	r.s[0] = distr(eng);
-	r.s[1] = distr(eng);
-	r.s[2] = distr(eng);
-	r.s[3] = distr(eng);
+	if (!CryptAcquireContext(hCryptProv.get(), NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+		throw std::runtime_error("Failed to acquire crypt context: " + std::to_string(GetLastError()));
+	if (!CryptGenRandom(*hCryptProv, sizeof(cl_ulong4), (BYTE*)&r))
+		throw std::runtime_error("Failed to generate random bytes: " + std::to_string(GetLastError()));
+#else
+	std::unique_ptr<FILE, void(*)(FILE*)> fp(fopen("/dev/urandom", "rb"), [](FILE* fp) {
+		if (fp)
+			fclose(fp);
+	});
+
+	if (!fp)
+		throw std::runtime_error("Failed to open /dev/urandom");
+	if (fread(&r, sizeof(cl_ulong4), 1, fp.get()) != 1)
+		throw std::runtime_error("Failed to read /dev/urandom");
+#endif
+
+	// printf("r.s[0]: %lu\n", r.s[0]);
+	// printf("r.s[1]: %lu\n", r.s[1]);
+	// printf("r.s[2]: %lu\n", r.s[2]);
+	// printf("r.s[3]: %lu\n", r.s[3]);
 	return r;
 #endif
 }
@@ -137,8 +208,8 @@ Dispatcher::Device::Device(Dispatcher & parent, cl_context & clContext, cl_progr
 	m_memInversedNegativeDoubleGy(clContext, m_clQueue, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, size, true),
 	m_memPrevLambda(clContext, m_clQueue, CL_MEM_READ_WRITE | CL_MEM_HOST_NO_ACCESS, size, true),
 	m_memResult(clContext, m_clQueue, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY, PROFANITY_MAX_SCORE + 1),
-	m_memData1(clContext, m_clQueue, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, 20),
-	m_memData2(clContext, m_clQueue, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, 20),
+	m_memData1(clContext, m_clQueue, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, 34),
+	m_memData2(clContext, m_clQueue, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, 34),
 	m_clSeed(createSeed()),
 	m_round(0),
 	m_speed(PROFANITY_SPEEDSAMPLES),
@@ -152,9 +223,19 @@ Dispatcher::Device::~Device() {
 
 }
 
-Dispatcher::Dispatcher(cl_context & clContext, cl_program & clProgram, const Mode mode, const size_t worksizeMax, const size_t inverseSize, const size_t inverseMultiple, const cl_uchar clScoreQuit)
-	: m_clContext(clContext), m_clProgram(clProgram), m_mode(mode), m_worksizeMax(worksizeMax), m_inverseSize(inverseSize), m_size(inverseSize*inverseMultiple), m_clScoreMax(mode.score), m_clScoreQuit(clScoreQuit), m_eventFinished(NULL), m_countPrint(0) {
-
+Dispatcher::Dispatcher(cl_context & clContext, cl_program & clProgram, const Mode mode, const size_t worksizeMax, const size_t inverseSize, const size_t inverseMultiple, const cl_uchar clScoreQuit, const bool tron)
+	: m_clContext(clContext)
+	, m_clProgram(clProgram)
+	, m_mode(mode)
+	, m_worksizeMax(worksizeMax)
+	, m_inverseSize(inverseSize)
+	, m_size(inverseSize*inverseMultiple)
+	, m_clScoreMax(mode.score)
+	, m_clScoreQuit(clScoreQuit)
+	, m_eventFinished(NULL)
+	, m_countPrint(0)
+	, m_tron(tron)
+{
 }
 
 Dispatcher::~Dispatcher() {
@@ -228,7 +309,7 @@ void Dispatcher::init() {
 
 void Dispatcher::initBegin(Device & d) {
 	// Set mode data
-	for (auto i = 0; i < 20; ++i) {
+	for (auto i = 0; i < 34; ++i) {
 		d.m_memData1[i] = m_mode.data1[i];
 		d.m_memData2[i] = m_mode.data2[i];
 	}
@@ -387,7 +468,7 @@ void Dispatcher::handleResult(Device & d) {
 					m_quit = true;
 				}
 
-				printResult(d.m_clSeed, d.m_round, r, i, timeStart, m_mode);
+				printResult(d.m_clSeed, d.m_round, r, i, timeStart, m_mode, m_tron);
 			}
 
 			break;

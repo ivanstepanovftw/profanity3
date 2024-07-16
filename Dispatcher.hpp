@@ -20,7 +20,7 @@
 #include "Mode.hpp"
 
 #define PROFANITY_SPEEDSAMPLES 20
-#define PROFANITY_MAX_SCORE 40
+#define PROFANITY_MAX_SCORE 68
 
 class Dispatcher {
 	private:
@@ -78,7 +78,7 @@ class Dispatcher {
 		};
 
 	public:
-		Dispatcher(cl_context & clContext, cl_program & clProgram, const Mode mode, const size_t worksizeMax, const size_t inverseSize, const size_t inverseMultiple, const cl_uchar clScoreQuit = 0);
+		Dispatcher(cl_context & clContext, cl_program & clProgram, const Mode mode, const size_t worksizeMax, const size_t inverseSize, const size_t inverseMultiple, const cl_uchar clScoreQuit, const bool tron);
 		~Dispatcher();
 
 		void addDevice(cl_device_id clDeviceId, const size_t worksizeLocal, const size_t index);
@@ -127,6 +127,7 @@ class Dispatcher {
 		size_t m_sizeInitTotal;
 		size_t m_sizeInitDone;
 		bool m_quit;
+		bool m_tron;
 };
 
 #endif /* HPP_DISPATCHER */

@@ -20,17 +20,18 @@ class Mode {
 		Mode();
 
 	public:
-		static Mode matching(const std::string strHex);
-		static Mode range(const cl_uchar min, const cl_uchar max);
-		static Mode leading(const char charLeading);
-		static Mode leadingRange(const cl_uchar min, const cl_uchar max);
-		static Mode mirror();
+		static Mode matching(bool tron, const std::string strHex);
+		static Mode range(bool tron, const cl_uchar min, const cl_uchar max);
+		static Mode leading(bool tron, const char charLeading);
+		static Mode leadingRange(bool tron, const cl_uchar min, const cl_uchar max);
+		static Mode mirror(bool tron);
 
-		static Mode benchmark();
-		static Mode zeros();
-		static Mode letters();
-		static Mode numbers();
-		static Mode doubles();
+		static Mode benchmark(bool tron);
+		static Mode zeros(bool tron);
+		static Mode zeroBytes(bool tron);
+		static Mode letters(bool tron);
+		static Mode numbers(bool tron);
+		static Mode doubles(bool tron);
 
 		std::string name;
 
@@ -42,8 +43,8 @@ class Mode {
 		// Address, Contract, ...
 		std::string transformName() const;
 
-		cl_uchar data1[20];
-		cl_uchar data2[20];
+		cl_uchar data1[34];
+		cl_uchar data2[34];
 		cl_uchar score;
 };
 
